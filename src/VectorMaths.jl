@@ -1,0 +1,505 @@
+"""
+# Module VectorMaths
+
+Data Analysis and Manipulation tools containing functions:
+
+- `DFvector_mean` to return a DataFrame with common x data, adjusted y data,
+  the mean and sum of the y data of two DataFrames
+- `multivector_mean` to return a DataFrame with the common x data, adjusted y data,
+  the mean and sum of the y data of any number of individaul DataFrames with an
+  x and a y column either for their common x data range or over the whole x data
+  range
+"""
+module VectorMaths
+
+
+##################
+###  PREAMBLE  ###
+##################
+
+# Load packages
+using DataFrames
+using Dierckx
+
+export vector_maths
+
+
+##########################
+###  PUBLIC FUNCTIONS  ###
+##########################
+
+
+"""
+    DFvector_mean(df1::DataFrames.DataFrame, df2::DataFrames.DataFrame;
+      x1::Symbol, y1::Symbol, x2::Symbol, y2::Symbol)
+
+Calculate the mean of `y1(x1)` and `y2(x2)` from 2 different DataFrames `df1`
+and `df2`. If `x1` and `x2` differ, combine both vectors in the overlapping range.
+
+For missing y values in either `df1` or `df2`, cubic splines are used to interpolate
+the data and have 2 consistent datasets with shared x values.
+
+The function uses keyword arguments `x1`, `x2`, `y1`, and `y2` to specify the column
+symbols in each DataFrame. If the symbols are obsolete, column 1 is assumed to hold
+the x data and column 2 the y data in each DataFrame, respectively.
+
+The function returns a DataFrames with columns `x` with the combined x values from
+both datasets, columns `y1` and `y2` with the adjusted y data using the combined x
+data of equal array length, a column `mean` with the mean of `y1` and `y2`, and
+a column `sum` with the sum of `y1` and `y2`.
+"""
+function DFvector_mean(df1::DataFrames.DataFrame, df2::DataFrames.DataFrame;
+  x1::Symbol=Symbol(""), y1::Symbol=Symbol(""), x2::Symbol=Symbol(""), y2::Symbol=Symbol(""))
+  # Set default columns for x/y data
+  if x1 == Symbol("")  x1 = names(df1)[1]  end
+  if y1 == Symbol("")  y1 = names(df1)[2]  end
+  if x2 == Symbol("")  x2 = names(df2)[1]  end
+  if y2 == Symbol("")  y2 = names(df2)[2]  end
+  # Find overlapping range in x data
+  xmin = max(df1[x1][1],df2[x2][1])
+  xmax = min(df1[x1][end],df2[x2][end])
+
+  # Abort for non-strictly ascending x data
+  if unique(sort(df1[x1])) ≠ df1[x1] || unique(sort(df2[x2])) ≠ df2[x2]
+    println("No strictly ascending x data. Script stopped."); exit()
+  end
+
+  # Create cubic spline of both datasets incase to interpolate missing data
+  spl1 = Spline1D(df1[x1], df1[y1])
+  spl2 = Spline1D(df2[x2], df2[y2])
+
+  # Combine x data of both DataFrames
+  xdata = unique(sort(vcat(df1[x1],df2[x2])))
+  imin = find(xdata.==xmin)[1]; imax = find(xdata.==xmax)[1]
+  xdata = xdata[imin:imax]
+
+  # Assing y data from each DataFrame, use cubic spines for missing data
+  ydat1 = Number[]; ydat2 = Number[]
+  for x in xdata
+    try push!(ydat1,df1[y1][find(df1[x1].==x)[1]])
+    catch; push!(ydat1,spl1(x))
+    end
+    try push!(ydat2,df2[y2][find(df2[x1].==x)[1]])
+    catch; push!(ydat2,spl2(x))
+    end
+  end
+
+  # Calculate sum and mean of both y-vectors
+  ysum = (ydat1.+ydat2)
+  ymean = ysum./2
+  # Return combined x data, mean of combined y data,
+  # and adjusted y data vectors of each vector in a DataFrame
+  return DataFrame(x = xdata, y1 = ydat1, y2 = ydat2, mean = ymean, sum = ysum)
+end #function DFvector_mean
+
+
+"""
+    multivector_mean(vectors::Vector{DataFrames.DataFrame};
+                     datarange::String="all", smooth_mean::String="offset")
+
+From a vector of DataFrames (`vectors`) with x values in the first column and
+y values in the second column, return a single DataFrame with unified x data in
+the first column `x`, the ydata in the following columns `y1` to `yn`, the mean
+in column `mean` and the sum in column `sum`. The x data in each DataFrame must
+be strictly monotonic. Moreover, there must be a range, where the x data of all
+vectors overlap.
+
+There are two options for the keyword argument `datarange`: `common` and `all`.
+If `common` is chosen, data is only returned for the overlapping range of all
+vectors. If the data have different step sizes, all x values are collected and
+cubic splines are used to interpolate missing data.
+
+If `all` is chosen, all vectors are filled with `NaN`s, if their range is shorter
+than the maximum range of all vectors. `NaN`s are ignored for the calculation of
+the `sum` and the `mean`.
+
+Furthermore, for vectors of different lengths, the mean is either multiplied by
+a scaling factor or an offset is added depending on the choice in the second
+keyword argment `smooth_mean`: `"offset"` or `"scale"`.
+Scaling factors or offsets are applied before every delayed start of a vector and
+after each premature end of a vector, respectively, to assure a contineous smooth
+mean even if an outlier has ended. Offsets and means are calcualted as
+
+    offset = Ø(y values of all vectors)-Ø(y values of remaining vectors)
+    SF = Ø(y values of all vectors)/Ø(y values of remaining vectors)
+
+This means, that the ends of each shorter vector will influence the mean outside
+the range of this vector. Scaling factors should not be used, if the y data spans
+a large range (over several orders of magnitudes) as otherwise a small offset at
+the lower end of the data could lead to a large scaled offset at the upper end of
+the y data. Scaling factors should be used, if you want to assure that the sign
+in your y data does not change and the y data is in a reasonably small range.
+"""
+function vector_maths(vectors::DataFrames.DataFrame...;
+  datarange::String="all", smooth_mean::String="offset",
+  xcols::Vector{Any}=[], ycols::Vector{Any}=[])
+
+  # Define x and y data in each DataFrame
+  xcols = check_columns(vectors, xcols, 'x')
+  ycols = check_columns(vectors, ycols, 'y')
+
+  ### Check input data
+  fail = test_monotonicity(vectors, xcols)
+  if fail  return nothing  end
+#=
+  ### Find common range of all vectors
+  # Find start/end x value of each vector (DataFrame)
+  mins = Float64[]; maxs = Float64[]
+  for d in vectors
+    push!(mins,d[1][1])
+    push!(maxs,d[1][end])
+  end
+  # Find boundaries of common range in all datasets
+  lowest_common  = maximum(mins)
+  largest_common = minimum(maxs)
+
+  ### Get all data points in each DataFrame within the common range
+  common_xdata = get_xdata(vectors, lowest_common, largest_common)
+
+  # Get cubic splines of all vectors
+  spl = Dierckx.Spline1D[]
+  for d in vectors  push!(spl,Spline1D(d[1],d[2]))  end
+
+  # Assign y data from each DataFrame, use cubic spines for missing data
+  common_ydata = get_ydata(common_xdata,vectors,mins,maxs,spl)
+
+
+  # Generate output DataFrame with common x data, individual y data columns,
+  # the mean and sum
+  if datarange == "common"
+    # Compile output DataFrame
+    dfr = DataFrame(x = common_xdata)
+    for i = 1:length(vectors)
+      dfr[Symbol("y$i")] = common_ydata[:,i]
+    end
+    dfr[:mean] = vec(mean(common_ydata,2))
+    dfr[:sum]  = vec(sum(common_ydata,2))
+  else
+    # Find all x and y data outside common range
+    # Assign NaN's to missing data
+    lower_xdata = get_xdata(vectors, -Inf, lowest_common, bounds="exclude")
+    upper_xdata = get_xdata(vectors, largest_common, Inf, bounds="exclude")
+
+    # Find indices in arrays, where some data columns end in the lower or upper data
+    mi, Mi = find_boundaries(mins,maxs,lower_xdata,upper_xdata)
+
+    lower_ydata = get_ydata(lower_xdata,vectors,mins,maxs,spl)
+    upper_ydata = get_ydata(upper_xdata,vectors,mins,maxs,spl)
+
+    SF = get_ScalingFactor(smooth_mean, lower_xdata, common_xdata, upper_xdata,
+                           lower_ydata, common_ydata, upper_ydata, mi, Mi)
+
+    # Get mean and sum
+    lower_mean, lower_sum = calc_MeanSum(lower_ydata,SF[1],smooth_mean)
+    upper_mean, upper_sum = calc_MeanSum(upper_ydata,SF[2],smooth_mean)
+
+    # Compile output DataFrame
+    dfr = DataFrame(x = vcat(lower_xdata, common_xdata, upper_xdata))
+    for i = 1:length(vectors)
+      dfr[Symbol("y$i")] = vcat(lower_ydata[:,i], common_ydata[:,i], upper_ydata[:,i])
+    end
+    dfr[:mean] = vcat(lower_mean, vec(mean(common_ydata,2)), upper_mean)
+    dfr[:sum]  = vcat(lower_sum, vec(sum(common_ydata,2)), upper_sum)
+  end
+
+
+  return dfr
+=#
+end #function vector_maths
+
+
+###########################
+###  PRIVATE FUNCTIONS  ###
+###########################
+
+
+"""
+    check_columns(vectors, cols, coltype::Char)
+
+For every `DataFrame` in `vectors`, check that columns are assigned and assign
+first column as x data and second column as ydata for missing assignments or
+delete definitions in `cols` in excess of `DataFrames` in `vectors`.
+
+`coltype` defines the data type (`'x'` or `'y'` data) in the columns of the `DataFrames`
+in `vectors`.
+"""
+function check_columns(vectors, cols, coltype::Char)
+  if isempty(cols) && coltype == 'x'
+    cols = ones(Int64, length(vectors))
+  elseif isempty(cols) && coltype == 'y'
+    cols = 2 .* ones(Int64, length(vectors))
+  elseif length(cols) > length(vectors)
+    println("\033[95mWarning! More $coltype columns defined than vectors available.\33[0m")
+    println("Last $(length(cols) - length(vectors)) columns in `$(coltype)cols` ignored.")
+    deleteat!(cols, 1 + length(vectors):length(cols))
+  elseif length(cols) < length(vectors)
+    println("\033[95mWarning! Less x columns defined than vectors available.\33[0m")
+    println("First column assumed to hold x data in last ",
+      "$(length(vectors) - length(cols)) DataFrames.")
+    if (typeof(cols[1]) == Symbol || typeof(cols[1]) == Vector{Symbol}) &&
+      coltype == 'x'
+      [push!(cols, names(vectors[i])[1]) for i = 1 + length(cols):length(vectors)]
+    elseif (typeof(cols[1]) == Symbol || typeof(cols[1]) == Vector{Symbol}) &&
+      coltype == 'y'
+      [push!(cols, names(vectors[i])[2]) for i = 1 + length(cols):length(vectors)]
+    elseif coltype == 'x'
+      [push!(cols, 1) for i = 1:length(vectors) - length(cols)]
+    elseif coltype == 'y'
+      [push!(cols, 2) for i = 1:length(vectors) - length(cols)]
+    end
+  end #function check_column_defs
+
+  return cols
+end #function check_columns
+
+
+"""
+    test_monotonicity(vectors)
+
+Test the the first column in each DataFrame in a vector of DataFrames (`vectors`)
+is strictly monotonic. Issue a warning and stop the script, if not.
+"""
+function test_monotonicity(vectors, x)
+  fail = false
+  for v = 1:length(vectors)
+    if vectors[v][x[v]] != sort(unique(vectors[v][x[v]]))
+      println("\033[95mError! X data in dataframe $v not strictly monotonic.")
+      println("Script stopped.\033[0m")
+      fail = true
+      break
+    end
+  end
+
+  return fail
+end #function test_monotonicity
+
+"""
+    get_xdata(vectors,lb,ub;bounds::String="include")
+
+For a vector of DataFrames (`vectors`), extract the x data from each first column
+within the given bounds `lb` and `ub`. If the keyword argument `bounds` is set to
+`"include"`, bounds are included, if set to `"exclude"`, bounds are excluded.
+"""
+function get_xdata(vectors,lb,ub;bounds::String="include")
+  # Retrieve indices of all x datapoints within the specified boundaries
+  vrange = []
+  for d in vectors
+    if bounds == "include"
+      push!(vrange,find(lb.≤d[1].≤ub))
+    else bounds == "exclude"
+      push!(vrange,find(lb.<d[1].<ub))
+    end
+  end
+
+  # Collect all possible datapoints from each vector and unify the data
+  xdata = Float64[]
+  for i = 1:length(vectors)
+    xdata = vcat(xdata,vectors[i][1][vrange[i]])
+  end
+  xdata = unique(sort(xdata))
+
+  # Return a unified x data array
+  return xdata
+end #function get_xdata
+
+
+"""
+    get_ydata(xdata,vectors,mins,maxs,spl)
+
+From the unified `xdata` in a specified range in `vectors` (vector holding
+DataFrames with x data in the first column and y data in the second column),
+the minima (`mins`) and maxima (`maxs`) of each individual x data and an array
+of cubic splines of each DataFrame (`spl`), return a matrix with unified ydata,
+where missing datapoints due to different step sizes within the range of each
+DataFrame are interpolated by a cubic spline in `spl` and are filled with `NaN`s
+outside the range of the individual datasets.
+"""
+function get_ydata(xdata,vectors,mins,maxs,spl)
+  # Initialise output matrix
+  ydata = Matrix{Float64}(length(xdata),0)
+  # Loop over all DataFrames
+  for i = 1:length(vectors)
+    # Initialise y data of current DataFrame
+    yd = Float64[]
+    # Loop over unified x data
+    for x in xdata
+      # Try to add value for current x value, if y is missing
+      # interpolate with cubic spline, if inside the range of the current vector
+      # or fill with NaN outside its range
+      try push!(yd,vectors[i][2][find(vectors[i][1].==x)[1]])
+      catch
+        if mins[i] ≤ x ≤ maxs[i]
+          push!(yd,spl[i](x))
+        else
+          push!(yd,NaN)
+        end
+      end
+    end
+    # Add a column with completed y data of current DataFrame to the output matrix
+    ydata = hcat(ydata,yd)
+  end
+
+  # Return unified y data
+  return ydata
+end #function get_ydata
+
+
+"""
+get_ScalingFactor(smooth_mean, lower_xdata, common_xdata, upper_xdata,
+                  lower_ydata, common_ydata, upper_ydata, mi, Mi)
+
+From the unified x and y data below, inside, and above the common range and
+the indices of ending vectors outside the common range in the unified x data
+(`mi` and `Mi`), calculate and return either offsets or scaling factors (as
+defined in `smooth_mean` with the keywords `"offset"` or `"scale"`) to allow
+a smooth contineous mean at the delayed start or premature ends of vectors.
+"""
+function get_ScalingFactor(smooth_mean, lower_xdata, common_xdata, upper_xdata,
+                           lower_ydata, common_ydata, upper_ydata, mi, Mi)
+
+  ### Get scaling factors for data below the common x range
+  flow = ones(lower_xdata); fhigh = ones(upper_xdata)
+  if isempty(mi) && length(lower_ydata) > 0
+    # Calculate scaling factors, if no premature ending vectors are found
+    # outside the common range
+    if smooth_mean == "offset"
+      flow[1:end] = mean(common_ydata[1,:]) -
+                    mean(common_ydata[1,:][!isnan.(lower_ydata[end,:])])
+    else
+      flow[1:end] = mean(common_ydata[1,:])/
+                    mean(common_ydata[1,:][!isnan.(lower_ydata[end,:])])
+    end
+  elseif length(lower_ydata) > 0
+    # Calculate scaling factors, if premature ending vectors outside the
+    # common range are found
+    y = lower_ydata[mi[1],:]
+    # Scaling factors from common range to first ending vectors
+    if smooth_mean == "offset"
+      flow[1:mi[1]-1] = mean(y[!isnan.(y)])-mean(y[!isnan.(lower_ydata[mi[1]-1,:])])
+    else
+      flow[1:mi[1]-1] = mean(y[!isnan.(y)])/mean(y[!isnan.(lower_ydata[mi[1]-1,:])])
+    end
+    # Scaling vectors for further ending vectors
+    for i = 2:length(mi)
+      y = lower_ydata[mi[i],:]
+      if smooth_mean == "offset"
+        flow[mi[i-1]:mi[i]-1] = mean(y[!isnan.(y)]) -
+                                mean(y[!isnan.(lower_ydata[mi[i]-1,:])])
+      else
+        flow[mi[i-1]:mi[i]-1] = mean(y[!isnan.(y)])/
+                                mean(y[!isnan.(lower_ydata[mi[i]-1,:])])
+      end
+    end
+    # Scaling factors for last prematurely ending vector to end of data range
+    if smooth_mean == "offset"
+      flow[mi[end]:end] = mean(common_ydata[1,:]) -
+                          mean(common_ydata[1,:][!isnan.(lower_ydata[end,:])])
+    else
+      flow[mi[end]:end] = mean(common_ydata[1,:])/
+                          mean(common_ydata[1,:][!isnan.(lower_ydata[end,:])])
+    end
+  end
+
+  ### Get scaling factors for data above the common x range
+  if isempty(Mi) && length(upper_ydata) > 0
+    # Calculate scaling factors, if no premature ending vectors are found
+    # outside the common range
+    if smooth_mean == "offset"
+      fhigh[1:end] = mean(common_ydata[end,:]) -
+                     mean(common_ydata[end,:][!isnan.(upper_ydata[1,:])])
+    else
+      fhigh[1:end] = mean(common_ydata[end,:])/
+                     mean(common_ydata[end,:][!isnan.(upper_ydata[1,:])])
+    end
+  elseif length(upper_ydata) > 0
+    # Calculate scaling factors, if premature ending vectors outside the
+    # common range are found
+    # Scaling factors from common range to first ending vectors
+    if smooth_mean == "offset"
+      fhigh[1:Mi[1]-1] = mean(common_ydata[end,:]) -
+                         mean(common_ydata[end,:][!isnan.(upper_ydata[1,:])])
+    else
+      fhigh[1:Mi[1]-1] = mean(common_ydata[end,:])/
+                         mean(common_ydata[end,:][!isnan.(upper_ydata[1,:])])
+    end
+    # Scaling vectors for further ending vectors
+    for i = 2:length(Mi)
+      y = upper_ydata[Mi[i],:]
+      if smooth_mean == "offset"
+        fhigh[Mi[i-1]:Mi[i]-1] = mean(y[!isnan.(y)]) -
+                                 mean(y[!isnan.(upper_ydata[Mi[i]+1,:])])
+      else
+        fhigh[Mi[i-1]:Mi[i]-1] = mean(y[!isnan.(y)])/
+                                 mean(y[!isnan.(upper_ydata[Mi[i]+1,:])])
+      end
+    end
+    # Scaling vectors for further ending vectors
+    y = upper_ydata[Mi[end],:]
+    if smooth_mean == "offset"
+      fhigh[Mi[end]:end] = mean(y[!isnan.(y)]) -
+                           mean(y[!isnan.(upper_ydata[Mi[end]+1,:])])
+    else
+      fhigh[Mi[end]:end] = mean(y[!isnan.(y)])/
+                           mean(y[!isnan.(upper_ydata[Mi[end]+1,:])])
+    end
+  end
+
+  # Return scaling factors for mean below and above the common range
+  return flow, fhigh
+end #function get_ScalingFactor
+
+
+"""
+    find_boundaries(mins,maxs,lower_xdata,upper_xdata)
+
+From the minima (`mins`) and maxima (`maxs`) in the x data of each DataFrame,
+and the `lower_xdata` and `upper_xdata` below and above the common range, return
+all indices in `lower_xdata` and `upper_xdata`, where vectors are prematurely
+ending outside the common range.
+"""
+function find_boundaries(mins,maxs,lower_xdata,upper_xdata)
+  # Initialise
+  mi = Int64[]; Mi = Int64[]
+  # Loop over extrema
+  for m = 1:length(mins)
+    # Save vectors starting later the absolute minimum,
+    # but before common range
+    if all(float(mins[m]).!=extrema(mins))
+      push!(mi,find(lower_xdata.==mins[m])[1])
+    end
+    # Save prematurely ending vectors outside common range
+    if all(float(maxs[m]).!=extrema(maxs))
+      push!(Mi,find(upper_xdata.==maxs[m])[1])
+    end
+  end
+  # Unify data for more than one ending vector at the same point
+  mi = sort(unique(mi)); Mi = sort(unique(Mi))
+
+  # Return indices
+  return mi, Mi
+end
+
+
+"""
+    calc_MeanSum(Ydata,SF,smooth_mean)
+
+From the unified `Ydata` of each DataFrame and the corresponding offsets or
+scaling factors `SF` for the mean outside the common range (as set by
+`smooth_mean` with the keywords `"offset"` or `"scale"`), calculate the `mean`
+and `sum` of all `Ydata`.
+"""
+function calc_MeanSum(Ydata,SF,smooth_mean)
+  Ymean = Float64[]; Ysum = Float64[]
+  for i = 1:length(SF)
+    if smooth_mean == "offset"
+      push!(Ymean,mean(Ydata[i,:][!isnan.(Ydata[i,:])])+SF[i])
+    else
+      push!(Ymean,mean(Ydata[i,:][!isnan.(Ydata[i,:])])⋅SF[i])
+    end
+    push!(Ysum,sum(Ydata[i,:][!isnan.(Ydata[i,:])]))
+  end
+
+  return Ymean, Ysum
+end #function calc_MeanSum
+
+end #module VectorMaths
