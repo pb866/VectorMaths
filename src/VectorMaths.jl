@@ -30,70 +30,6 @@ export vector_maths
 
 
 """
-    DFvector_mean(df1::DataFrames.DataFrame, df2::DataFrames.DataFrame;
-      x1::Symbol, y1::Symbol, x2::Symbol, y2::Symbol)
-
-Calculate the mean of `y1(x1)` and `y2(x2)` from 2 different DataFrames `df1`
-and `df2`. If `x1` and `x2` differ, combine both vectors in the overlapping range.
-
-For missing y values in either `df1` or `df2`, cubic splines are used to interpolate
-the data and have 2 consistent datasets with shared x values.
-
-The function uses keyword arguments `x1`, `x2`, `y1`, and `y2` to specify the column
-symbols in each DataFrame. If the symbols are obsolete, column 1 is assumed to hold
-the x data and column 2 the y data in each DataFrame, respectively.
-
-The function returns a DataFrames with columns `x` with the combined x values from
-both datasets, columns `y1` and `y2` with the adjusted y data using the combined x
-data of equal array length, a column `mean` with the mean of `y1` and `y2`, and
-a column `sum` with the sum of `y1` and `y2`.
-"""
-function DFvector_mean(df1::DataFrames.DataFrame, df2::DataFrames.DataFrame;
-  x1::Symbol=Symbol(""), y1::Symbol=Symbol(""), x2::Symbol=Symbol(""), y2::Symbol=Symbol(""))
-  # Set default columns for x/y data
-  if x1 == Symbol("")  x1 = names(df1)[1]  end
-  if y1 == Symbol("")  y1 = names(df1)[2]  end
-  if x2 == Symbol("")  x2 = names(df2)[1]  end
-  if y2 == Symbol("")  y2 = names(df2)[2]  end
-  # Find overlapping range in x data
-  xmin = max(df1[x1][1],df2[x2][1])
-  xmax = min(df1[x1][end],df2[x2][end])
-
-  # Abort for non-strictly ascending x data
-  if unique(sort(df1[x1])) ≠ df1[x1] || unique(sort(df2[x2])) ≠ df2[x2]
-    println("No strictly ascending x data. Script stopped."); exit()
-  end
-
-  # Create cubic spline of both datasets incase to interpolate missing data
-  spl1 = Spline1D(df1[x1], df1[y1])
-  spl2 = Spline1D(df2[x2], df2[y2])
-
-  # Combine x data of both DataFrames
-  xdata = unique(sort(vcat(df1[x1],df2[x2])))
-  imin = find(xdata.==xmin)[1]; imax = find(xdata.==xmax)[1]
-  xdata = xdata[imin:imax]
-
-  # Assing y data from each DataFrame, use cubic spines for missing data
-  ydat1 = Number[]; ydat2 = Number[]
-  for x in xdata
-    try push!(ydat1,df1[y1][find(df1[x1].==x)[1]])
-    catch; push!(ydat1,spl1(x))
-    end
-    try push!(ydat2,df2[y2][find(df2[x1].==x)[1]])
-    catch; push!(ydat2,spl2(x))
-    end
-  end
-
-  # Calculate sum and mean of both y-vectors
-  ysum = (ydat1.+ydat2)
-  ymean = ysum./2
-  # Return combined x data, mean of combined y data,
-  # and adjusted y data vectors of each vector in a DataFrame
-  return DataFrame(x = xdata, y1 = ydat1, y2 = ydat2, mean = ymean, sum = ysum)
-end #function DFvector_mean
-
-
-"""
     multivector_mean(vectors::Vector{DataFrames.DataFrame};
                      datarange::String="all", smooth_mean::String="offset")
 
@@ -132,37 +68,41 @@ in your y data does not change and the y data is in a reasonably small range.
 """
 function vector_maths(vectors::DataFrames.DataFrame...;
   datarange::String="all", smooth_mean::String="offset",
-  xcols::Vector{Any}=[], ycols::Vector{Any}=[])
+  xcols::Union{Vector{Int64},Vector{Symbol},Vector{Any}}=[],
+  ycols::Union{Vector{Int64},Vector{Symbol},Vector{Any}}=[])
 
   # Define x and y data in each DataFrame
-  xcols = check_columns(vectors, xcols, 'x')
-  ycols = check_columns(vectors, ycols, 'y')
+  xdata, ydata, xcols, ycols = compile_data(vectors, xcols, ycols)
 
   ### Check input data
   fail = test_monotonicity(vectors, xcols)
   if fail  return nothing  end
-#=
+
   ### Find common range of all vectors
   # Find start/end x value of each vector (DataFrame)
   mins = Float64[]; maxs = Float64[]
-  for d in vectors
-    push!(mins,d[1][1])
-    push!(maxs,d[1][end])
+  for x in xdata
+    @show(x[1], x[end])
+    push!(mins,x[1])
+    push!(maxs,x[end])
   end
   # Find boundaries of common range in all datasets
   lowest_common  = maximum(mins)
   largest_common = minimum(maxs)
 
   ### Get all data points in each DataFrame within the common range
-  common_xdata = get_xdata(vectors, lowest_common, largest_common)
+  common_xdata = get_xdata(xdata, lowest_common, largest_common)
 
   # Get cubic splines of all vectors
   spl = Dierckx.Spline1D[]
-  for d in vectors  push!(spl,Spline1D(d[1],d[2]))  end
+  for i = 1:length(vectors)
+    push!(spl,Spline1D(xdata[i],ydata[i]))
+  end
 
+  return common_xdata, xcols, xdata, ycols, ydata
+#=
   # Assign y data from each DataFrame, use cubic spines for missing data
   common_ydata = get_ydata(common_xdata,vectors,mins,maxs,spl)
-
 
   # Generate output DataFrame with common x data, individual y data columns,
   # the mean and sum
@@ -201,16 +141,70 @@ function vector_maths(vectors::DataFrames.DataFrame...;
     dfr[:mean] = vcat(lower_mean, vec(mean(common_ydata,2)), upper_mean)
     dfr[:sum]  = vcat(lower_sum, vec(sum(common_ydata,2)), upper_sum)
   end
-
+=#
 
   return dfr
-=#
 end #function vector_maths
 
 
 ###########################
 ###  PRIVATE FUNCTIONS  ###
 ###########################
+
+
+"""
+    compile_data(vectors, xcols, ycols)
+
+For each DataFrame in `vectors`, find the index of the x columns defined in `xcols`
+or use first column by default and the index of the y columns defined in `ycols`
+or use second column as default and return vectors with x and y data (as vectors)
+and the revised x and y column indices.
+"""
+function compile_data(vectors, xcols, ycols)
+  # Define x and y data in each DataFrame
+  xcols = check_columns(vectors, xcols, 'x')
+  ycols = check_columns(vectors, ycols, 'y')
+  xdata = []; ydata = []
+
+  # Loop over vectors
+  for i = 1:length(vectors)
+    # Filter mis-assigned column data
+    if length(xcols[i]) > 1 && length(xcols[i]) ≠ length(ycols[i])
+      println("\33[95mError! Different number of x and y columns definitions.")
+      println("$i. DataFrame ignored.\33[0m")
+      continue
+    end
+    # Retrieve x and y data from DataFrames
+    if xcols[i] isa Vector
+      for j in xcols[i]  push!(xdata, vectors[i][j])  end
+      ydata = assign_ydata(ycols[i], ydata, vectors[i])
+    elseif ycols[i] isa Vector
+      for j = 1:length(ycols[i])  push!(xdata, vectors[i][xcols[i]])  end
+      ydata = assign_ydata(ycols[i], ydata, vectors[i])
+    else
+      push!(xdata, vectors[i][xcols[i]])
+      ydata = assign_ydata(ycols[i], ydata, vectors[i])
+    end
+  end #loop over vectors
+
+  return xdata, ydata, xcols, ycols
+end #function compile_data
+
+
+"""
+    assign_ydata(ycols, ydata, vector)
+
+From the column index `ycols` in the current DataFrame `vector`, save the respective
+column as vector to `ydata` and return the appended array.
+"""
+function assign_ydata(ycols, ydata, vector)
+  if ycols isa Vector
+    [push!(ydata, vector[j]) for j in ycols]
+  else
+    push!(ydata, vector[ycols])
+  end
+  return ydata
+end
 
 
 """
@@ -280,21 +274,21 @@ For a vector of DataFrames (`vectors`), extract the x data from each first colum
 within the given bounds `lb` and `ub`. If the keyword argument `bounds` is set to
 `"include"`, bounds are included, if set to `"exclude"`, bounds are excluded.
 """
-function get_xdata(vectors,lb,ub;bounds::String="include")
+function get_xdata(xcols,lb,ub;bounds::String="include")
   # Retrieve indices of all x datapoints within the specified boundaries
-  vrange = []
-  for d in vectors
+  xrange = []
+  for x in xcols
     if bounds == "include"
-      push!(vrange,find(lb.≤d[1].≤ub))
+      push!(xrange,findall(lb.≤x.≤ub))
     else bounds == "exclude"
-      push!(vrange,find(lb.<d[1].<ub))
+      push!(xrange,findall(lb.<x.<ub))
     end
   end
 
   # Collect all possible datapoints from each vector and unify the data
   xdata = Float64[]
-  for i = 1:length(vectors)
-    xdata = vcat(xdata,vectors[i][1][vrange[i]])
+  for (i, x) in enumerate(xcols)
+    xdata = vcat(xdata,x[xrange[i]])
   end
   xdata = unique(sort(xdata))
 
@@ -314,11 +308,11 @@ where missing datapoints due to different step sizes within the range of each
 DataFrame are interpolated by a cubic spline in `spl` and are filled with `NaN`s
 outside the range of the individual datasets.
 """
-function get_ydata(xdata,vectors,mins,maxs,spl)
+function get_ydata(xdata,ydata,mins,maxs,spl)
   # Initialise output matrix
   ydata = Matrix{Float64}(length(xdata),0)
   # Loop over all DataFrames
-  for i = 1:length(vectors)
+  for i = 1:length(ydata)
     # Initialise y data of current DataFrame
     yd = Float64[]
     # Loop over unified x data
@@ -326,7 +320,7 @@ function get_ydata(xdata,vectors,mins,maxs,spl)
       # Try to add value for current x value, if y is missing
       # interpolate with cubic spline, if inside the range of the current vector
       # or fill with NaN outside its range
-      try push!(yd,vectors[i][2][find(vectors[i][1].==x)[1]])
+      try push!(yd,ydata[i][find(vectors[i][1].==x)[1]])
       catch
         if mins[i] ≤ x ≤ maxs[i]
           push!(yd,spl[i](x))
