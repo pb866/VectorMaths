@@ -73,47 +73,38 @@ function vector_maths(vectors::DataFrames.DataFrame...;
   ycols::Union{Vector{Int64},Vector{Symbol},Vector{Any}}=[])
 
   # Define x and y data in each DataFrame
-  xdata, ydata, xcols, ycols = compile_data(vectors, xcols, ycols)
+  xdata, ydata = compile_data(vectors, xcols, ycols)
 
   ### Check input data
-  fail = test_monotonicity(vectors, xcols)
-  if fail  return nothing  end
+  test_monotonicity(xdata)
 
   ### Find common range of all vectors
   # Find start/end x value of each vector (DataFrame)
-  mins = Float64[]; maxs = Float64[]
-  for x in xdata
-    push!(mins,x[1])
-    push!(maxs,x[end])
-  end
-  # Find boundaries of common range in all datasets
-  lowest_common  = maximum(mins)
-  largest_common = minimum(maxs)
+  unifiedx, imin, imax = unify_xdata(xdata)
 
   ### Get all data points in each DataFrame within the common range
-  common_xdata = get_xdata(xdata, lowest_common, largest_common)
+  # common_xdata = get_xdata(xdata, lowest_common, largest_common)
 
   # Get cubic splines of all vectors
-  spl = Dierckx.Spline1D[]
-  for i = 1:length(xdata)
-    push!(spl,Spline1D(xdata[i],ydata[i]))
-  end
+  spl = dataspline(xdata, ydata)
 
 
   # Assign y data from each DataFrame, use cubic spines for missing data
-  common_ydata = get_ydata(common_xdata,xdata,ydata,mins,maxs,spl)
+  unifiedy = get_ydata(unifiedx,xdata,ydata,spl)
 
   # Generate output DataFrame with common x data, individual y data columns,
   # the mean and sum
   if output == "common"
     # Compile output DataFrame
-    dfr = DataFrame(x = common_xdata)
+    dfr = DataFrame(x = unifiedx[imin[end]:imax[1]])
     for i = 1:length(ydata)
-      dfr[Symbol("y$i")] = common_ydata[:,i]
+      dfr[Symbol("y$i")] = unifiedy[imin[end]:imax[1],i]
     end
-    dfr[:mean] = vec(mean(common_ydata, dims=2))
-    dfr[:sum]  = vec(sum(common_ydata, dims=2))
+    dfr[:mean] = vec(mean(unifiedy[imin[end]:imax[1],:], dims=2))
+    dfr[:sum]  = vec(sum(unifiedy[imin[end]:imax[1],:], dims=2))
   else
+    return nothing
+    #=
     # Find all x and y data outside common range
     # Assign NaN's to missing data
     lower_xdata = get_xdata(xdata, -Inf, lowest_common, bounds="exclude")
@@ -125,8 +116,7 @@ function vector_maths(vectors::DataFrames.DataFrame...;
     lower_ydata = get_ydata(lower_xdata,xdata,ydata,mins,maxs,spl)
     upper_ydata = get_ydata(upper_xdata,xdata,ydata,mins,maxs,spl)
     return mi, Mi
-  end
-  #=
+
     SF = get_ScalingFactor(output, lower_xdata, common_xdata, upper_xdata,
                            lower_ydata, common_ydata, upper_ydata, mi, Mi)
 
@@ -141,8 +131,8 @@ function vector_maths(vectors::DataFrames.DataFrame...;
     end
     dfr[:mean] = vcat(lower_mean, vec(mean(common_ydata,2)), upper_mean)
     dfr[:sum]  = vcat(lower_sum, vec(sum(common_ydata,2)), upper_sum)
+    =#
   end
-  =#
 
   return dfr
 end #function vector_maths
@@ -188,24 +178,8 @@ function compile_data(vectors, xcols, ycols)
     end
   end #loop over vectors
 
-  return xdata, ydata, xcols, ycols
+  return xdata, ydata
 end #function compile_data
-
-
-"""
-    assign_ydata(ycols, ydata, vector)
-
-From the column index `ycols` in the current DataFrame `vector`, save the respective
-column as vector to `ydata` and return the appended array.
-"""
-function assign_ydata(ycols, ydata, vector)
-  if ycols isa Vector
-    [push!(ydata, vector[j]) for j in ycols]
-  else
-    push!(ydata, vector[ycols])
-  end
-  return ydata
-end
 
 
 """
@@ -246,6 +220,22 @@ function check_columns(vectors, cols, coltype::Char)
 
   return cols
 end #function check_columns
+ #
+
+"""
+    assign_ydata(ycols, ydata, vector)
+
+From the column index `ycols` in the current DataFrame `vector`, save the respective
+column as vector to `ydata` and return the appended array.
+"""
+function assign_ydata(ycols, ydata, vector)
+  if ycols isa Vector
+    [push!(ydata, vector[j]) for j in ycols]
+  else
+    push!(ydata, vector[ycols])
+  end
+  return ydata
+end #function assign_ydata
 
 
 """
@@ -255,20 +245,60 @@ Test the the first column in each DataFrame in a vector of DataFrames (`vectors`
 is strictly monotonic. Issue a warning and stop the script, if not. Use the vector
 with indices `x` to find the x column in each DataFrame.
 """
-function test_monotonicity(vectors, x)
+function test_monotonicity(xdata)
   fail = false
-  for v = 1:length(vectors)
-    if vectors[v][x[v]] != sort(unique(vectors[v][x[v]]))
-      println("\033[95mError! X data in dataframe $v not strictly monotonic.")
-      println("Script stopped.\033[0m")
-      fail = true
-      break
+  for (i, x) in enumerate(xdata)
+    if x ≠ sort(unique(x))
+      error("X data in dataframe $i not strictly monotonic.\n$x")
     end
   end
-
-  return fail
 end #function test_monotonicity
 
+
+"""
+
+
+"""
+function unify_xdata(xdata)
+  # Initialise
+  mins = Float64[]; maxs = Float64[]
+  # Loop over all vectors and get min/max xdata
+  for x in xdata
+    push!(mins,x[1])
+    push!(maxs,x[end])
+  end
+  # Sort and remove duplicates
+  mins = sort(unique(mins))
+  maxs = sort(unique(maxs))
+
+  # Check for common range
+  if maximum(mins) > minimum(maxs)
+    error("No common x data range.")
+  end
+  # Return unified x data and indices for lower/upper bounds
+  unifiedx = unique(sort(vcat(xdata...)))
+
+  return unifiedx, [findfirst(unifiedx.==i) for i in mins],
+    [findfirst(unifiedx.==i) for i in maxs]
+end #function unify_xdata
+
+
+"""
+
+
+"""
+function dataspline(xdata, ydata)
+  spl = Dierckx.Spline1D[]
+  for i = 1:length(xdata)
+    push!(spl,Spline1D(xdata[i],ydata[i]))
+  end
+
+  return spl
+end
+
+
+
+#=
 """
     get_xdata(xdata,lb,ub;bounds::String="include")
 
@@ -299,7 +329,7 @@ function get_xdata(xdata,lb,ub;bounds::String="include")
   # Return a unified x data array
   return commonx#, unifiedx
 end #function get_xdata
-
+=#
 
 """
     get_ydata(xdata,ydata,mins,maxs,spl)
@@ -310,11 +340,11 @@ ydata using the selected xdata range and supplementing missing ydata
 (due to different step sizes in the x datasets) within the common range with
 estimates from the splines and fill missing data outside the common range with `NaN`s.
 """
-function get_ydata(xrange,xdata,ydata,mins,maxs,spl)
+function get_ydata(xrange,xdata,ydata,spl)
   # Initialise output matrix
-  all_y = Matrix{Float64}(undef,length(xrange),0)
+  unifiedy = Matrix{Float64}(undef,length(xrange),0)
   # Loop over all DataFrames
-  for i = 1:length(xdata)
+  for i = 1:length(ydata)
     # Initialise y data of current DataFrame
     yd = Float64[]
     # Loop over unified x data
@@ -324,7 +354,7 @@ function get_ydata(xrange,xdata,ydata,mins,maxs,spl)
       # or fill with NaN outside its range
       try push!(yd,ydata[i][findfirst(xdata.==x)])
       catch
-        if mins[i] ≤ x ≤ maxs[i]
+        if xdata[i][1] ≤ x ≤ xdata[i][end]
           push!(yd,spl[i](x))
         else
           push!(yd,NaN)
@@ -332,11 +362,11 @@ function get_ydata(xrange,xdata,ydata,mins,maxs,spl)
       end
     end
     # Add a column with completed y data of current DataFrame to the output matrix
-    all_y = hcat(all_y,yd)
+    unifiedy = hcat(unifiedy,yd)
   end
 
   # Return unified y data
-  return all_y
+  return unifiedy
 end #function get_ydata
 
 
