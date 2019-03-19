@@ -82,7 +82,6 @@ function vector_maths(vectors::DataFrames.DataFrame...;
   # Find start/end x value of each vector (DataFrame)
   mins = Float64[]; maxs = Float64[]
   for x in xdata
-    @show(x[1], x[end])
     push!(mins,x[1])
     push!(maxs,x[end])
   end
@@ -95,15 +94,15 @@ function vector_maths(vectors::DataFrames.DataFrame...;
 
   # Get cubic splines of all vectors
   spl = Dierckx.Spline1D[]
-  for i = 1:length(vectors)
+  for i = 1:length(xdata)
     push!(spl,Spline1D(xdata[i],ydata[i]))
   end
 
-  return common_xdata, xcols, xdata, ycols, ydata
-#=
-  # Assign y data from each DataFrame, use cubic spines for missing data
-  common_ydata = get_ydata(common_xdata,vectors,mins,maxs,spl)
 
+  # Assign y data from each DataFrame, use cubic spines for missing data
+  common_ydata = get_ydata(common_xdata,ydata,mins,maxs,spl)
+  return common_xdata, unified_xdata, common_ydata
+#=
   # Generate output DataFrame with common x data, individual y data columns,
   # the mean and sum
   if datarange == "common"
@@ -248,10 +247,11 @@ end #function check_columns
 
 
 """
-    test_monotonicity(vectors)
+    test_monotonicity(vectors, x)
 
 Test the the first column in each DataFrame in a vector of DataFrames (`vectors`)
-is strictly monotonic. Issue a warning and stop the script, if not.
+is strictly monotonic. Issue a warning and stop the script, if not. Use the vector
+with indices `x` to find the x column in each DataFrame.
 """
 function test_monotonicity(vectors, x)
   fail = false
@@ -268,16 +268,17 @@ function test_monotonicity(vectors, x)
 end #function test_monotonicity
 
 """
-    get_xdata(vectors,lb,ub;bounds::String="include")
+    get_xdata(xdata,lb,ub;bounds::String="include")
 
-For a vector of DataFrames (`vectors`), extract the x data from each first column
-within the given bounds `lb` and `ub`. If the keyword argument `bounds` is set to
-`"include"`, bounds are included, if set to `"exclude"`, bounds are excluded.
+From the `xdata`, extract the  common x data of all DataFrames
+within the given bounds `lb` and `ub` and return it. The inclusion of the
+boundaries can be set with the keyword argument `bounds`
+(`"include"` (default)/`"exclude"`).
 """
-function get_xdata(xcols,lb,ub;bounds::String="include")
+function get_xdata(xdata,lb,ub;bounds::String="include")
   # Retrieve indices of all x datapoints within the specified boundaries
   xrange = []
-  for x in xcols
+  for x in xdata
     if bounds == "include"
       push!(xrange,findall(lb.≤x.≤ub))
     else bounds == "exclude"
@@ -286,31 +287,30 @@ function get_xdata(xcols,lb,ub;bounds::String="include")
   end
 
   # Collect all possible datapoints from each vector and unify the data
-  xdata = Float64[]
-  for (i, x) in enumerate(xcols)
-    xdata = vcat(xdata,x[xrange[i]])
+  commonx = Float64[]
+  for (i, x) in enumerate(xdata)
+    commonx = vcat(commonx,x[xrange[i]])
   end
-  xdata = unique(sort(xdata))
+  commonx = unique(sort(commonx))
+  # unifiedx = unique(sort(vcat(xdata...)))
 
   # Return a unified x data array
-  return xdata
+  return commonx#, unifiedx
 end #function get_xdata
 
 
 """
-    get_ydata(xdata,vectors,mins,maxs,spl)
+    get_ydata(xdata,ydata,mins,maxs,spl)
 
-From the unified `xdata` in a specified range in `vectors` (vector holding
-DataFrames with x data in the first column and y data in the second column),
-the minima (`mins`) and maxima (`maxs`) of each individual x data and an array
-of cubic splines of each DataFrame (`spl`), return a matrix with unified ydata,
-where missing datapoints due to different step sizes within the range of each
-DataFrame are interpolated by a cubic spline in `spl` and are filled with `NaN`s
-outside the range of the individual datasets.
+From the `xdata` in the boundaries `mins`/`maxs` and the respective `ydata`
+as well as splines `spl` of each dataset, return a matrix with unified
+ydata using the selected xdata range and supplementing missing ydata
+(due to different step sizes in the x datasets) within the common range with
+estimates from the splines and fill missing data outside the common range with `NaN`s.
 """
 function get_ydata(xdata,ydata,mins,maxs,spl)
   # Initialise output matrix
-  ydata = Matrix{Float64}(length(xdata),0)
+  all_y = Matrix{Float64}(undef,length(xdata),0)
   # Loop over all DataFrames
   for i = 1:length(ydata)
     # Initialise y data of current DataFrame
@@ -320,7 +320,7 @@ function get_ydata(xdata,ydata,mins,maxs,spl)
       # Try to add value for current x value, if y is missing
       # interpolate with cubic spline, if inside the range of the current vector
       # or fill with NaN outside its range
-      try push!(yd,ydata[i][find(vectors[i][1].==x)[1]])
+      try push!(yd,ydata[i][findfirst(ydata[i].==x)])
       catch
         if mins[i] ≤ x ≤ maxs[i]
           push!(yd,spl[i](x))
@@ -330,11 +330,11 @@ function get_ydata(xdata,ydata,mins,maxs,spl)
       end
     end
     # Add a column with completed y data of current DataFrame to the output matrix
-    ydata = hcat(ydata,yd)
+    all_y = hcat(all_y,yd)
   end
 
   # Return unified y data
-  return ydata
+  return all_y
 end #function get_ydata
 
 
