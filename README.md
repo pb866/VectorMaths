@@ -88,7 +88,7 @@ names are appended by `_1`, `_2`, ..., `:mean`, and `:sum` are used for the last
 2 columns.
 - `Vector{Symbol}`: Directly assign column header names in a `Vector{Symbol}` defining
 the name of the combined x data in the first entry, followed by the names of the
-y columns, the mean, and sum: `[:x, :y1, :y2,..., :Ø, :∑]`
+y columns, the mean, and sum: `[:x, :y1, :y2,..., :Ø, :∑]`.
 
 
 Version history
@@ -98,5 +98,5 @@ Version 0.1.0
 -------------
 - Improved version of `VectorMaths` in [auxdata](https://github.com/pb866/auxdata.git) with language updated to Julia 1.1.
 - Combine functions `DFvector_mean` and `multivector_mean` from previous module
-- use vararg instead of vector of DataFrames for input DataFrames
-- updated kwargs with `xcols`/`ycols` to select x/y data columns, `output` to select data range and scaling of data outside the common range, and `colnames` to manipulate column headers
+- Use vararg instead of vector of DataFrames for input DataFrames
+- Updated kwargs with `xcols`/`ycols` to select x/y data columns, `output` to select data range and scaling of data outside the common range, and `colnames` to manipulate column headers
