@@ -1,7 +1,7 @@
 """
 # Module VectorMaths
 
-Data Analysis and Manipulation tools currently with function `vector_maths` to
+Data analysis and manipulation tools currently with function `vector_maths` to
 calculate the mean and sum of selected vectors stored in DataFrames.
 """
 module VectorMaths
@@ -53,9 +53,9 @@ by the kwarg `output`:
 - `"common"`: If vectors have different lengths, only for the overlapping range
   a mean and sum is calculated.
 - `"offset"`: Mean and sum outside the common range are calculated by using an offset
-  `offset + data` to avoid unneccessary steps in the output.
+  `offset + data` to avoid unnecessary steps in the output.
 - `"scale"` (**default**): Mean and sum outside the common range are calculated
-  by using a scaling factor `SF · data` to avoid unneccessary steps in the output.
+  by using a scaling factor `SF · data` to avoid unnecessary steps in the output.
 
     offset = Ø(y values of all vectors)-Ø(y values of remaining vectors)
     SF = Ø(y values of all vectors)/Ø(y values of remaining vectors)
