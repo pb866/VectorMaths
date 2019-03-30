@@ -94,6 +94,12 @@ y columns, the mean, and sum: `[:x, :y1, :y2,..., :Ø, :∑]`.
 Version history
 ===============
 
+Version 0.1.1
+-------------
+- Improved error handling with new error types `ColError` and `DataError`
+- Fix error handling of mis-assigned x and y columns
+- Restructured source code
+
 Version 0.1.0
 -------------
 - Improved version of `VectorMaths` in [auxdata](https://github.com/pb866/auxdata.git) with language updated to Julia 1.1.
